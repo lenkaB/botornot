@@ -9,7 +9,7 @@ import random
 from nltk import word_tokenize
 import collections
 import enchant
-import math
+from scipy.stats import linregress
 
 dictionary = enchant.Dict('en')
 nlp = spacy.load('en')
@@ -51,8 +51,6 @@ def extract_stats(clean_tweet, tweet_id, human_or_bot):
         pos_counter[token.pos_] += 1
         pos_list.append(token.pos_)
 
-
-
     entity_list = []
     entity_label_list = []
     for ent in spacy_stats.ents:
@@ -80,6 +78,17 @@ def extract_stats(clean_tweet, tweet_id, human_or_bot):
     else:
         ttr = 0
 
+    i = 1
+    arr = []
+    for pos in pos_list:
+       arr.append(i)
+       i += 1
+
+    if len(arr):
+        ttr_slope = linregress(arr, curve)[0]
+    else:
+        ttr_slope = 0
+
     tweet_dict = {'index': tweet_id,
                   'raw': clean_tweet,
                   'preprocessed tweet': processed_tweet,
@@ -103,7 +112,8 @@ def extract_stats(clean_tweet, tweet_id, human_or_bot):
                   'urls': clean_tweet.count('$URL$'),
                   'class': human_or_bot, 'relationship words': found,
                   'count(rel words)': len(found),
-                  'ttr_curve': curve}
+                  'ttr curve': curve,
+                  'ttr slope': ttr_slope}
 
     return tweet_dict
 
@@ -148,18 +158,71 @@ def english_tweet_cleaner(raw_tweet):
     except:
         pass
 
+def conduct_experiments(feature_list, human_stats, bot_stats, deepen):
+    feature_list_copy = feature_list.copy()
+    experiments = []
+    previous_feature = None
+
+    print("CONDUCTING EXPERIMENTS WITH:"+str(feature_list))
+
+    experiments.append(train_and_test_classifiers(human_stats, bot_stats, feature_list))
+
+    curr_max = {'Accuracy for NB classifier': 0, 'Precision for NB classifier': 0,
+                'Recall for NB classifier': 0, 'F1 for NB classifier': 0, 'Accuracy for ME classifier': 0,
+                'Precision for ME classifier': 0,
+                'Recall for ME classifier': 0, 'F1 for ME classifier': 0}
+
+    if deepen:
+        for feature in feature_list_copy:
+            feature_list.remove(feature)
+            if previous_feature is not None:
+                feature_list.append(previous_feature)
+
+            print("INDIVIDUAL EXPERIMENT FOR:"+str(feature_list))
+            experiment = train_and_test_classifiers(human_stats, bot_stats, feature_list)
+
+            for key in curr_max:
+                if experiment[key] > curr_max[key]:
+                    curr_max[key] = experiment[key]
+
+            experiments.append(experiment)
+            previous_feature = feature
+
+    return experiments, curr_max
+
+
+def plot_ttr_curve(avg_human_curve, avg_bot_curve, datasets):
+        plt.plot(avg_human_curve,color='red')
+        plt.plot(avg_bot_curve)
+        import matplotlib.patches as mpatches
+        red_patch = mpatches.Patch(color='red', label=datasets[0])
+        blue_patch = mpatches.Patch(color='blue', label=datasets[1])
+        plt.legend(handles=[red_patch, blue_patch])
+        plt.show()
+
 
 def load_dataset_and_print_stats(human_or_bot, max):
     tweet_id = 0
     # based on the argument of the function human_or_bot, we set the parameters for loading and storing
-    if human_or_bot is 'human':
+    if human_or_bot is 'human17':
         filename = '/Users/lenka/Desktop/humans2017.csv'
         output = '/Users/lenka/Desktop/output_human2017' + str(max) + '.csv'
         tweet_column = 1
-    elif human_or_bot is 'bot':
-        #filename = '/Users/lenka/Desktop/bot/datasets/cresci-2015.csv/INT.csv/tweets.csv'
-        filename = '/Users/lenka/Desktop/bot/datasets/bot.csv'
-        output = '/Users/lenka/Desktop/output_bot_fakefol15' + str(max) + '.csv'
+    elif human_or_bot is 'bot_traditional':
+        filename = '/Users/lenka/Desktop/traditional1.csv'
+        output = '/Users/lenka/Desktop/output_bot_traditional1' + str(max) + '.csv'
+        tweet_column = 1
+    elif human_or_bot is 'bot_social2':
+        filename = '/Users/lenka/Desktop/social2.csv'
+        output = '/Users/lenka/Desktop/output_bot_social2' + str(max) + '.csv'
+        tweet_column = 1
+    elif human_or_bot is 'bot_social3':
+        filename = '/Users/lenka/Desktop/social3.csv'
+        output = '/Users/lenka/Desktop/output_bot_social3' + str(max) + '.csv'
+        tweet_column = 1
+    elif human_or_bot is 'bot_fakefol':
+        filename = '/Users/lenka/Desktop/fakefol.csv'
+        output = '/Users/lenka/Desktop/output_bot_fakefol' + str(max) + '.csv'
         tweet_column = 2
 
     with io.open(filename, "r", encoding="ISO-8859-1") as my_file:
@@ -172,7 +235,7 @@ def load_dataset_and_print_stats(human_or_bot, max):
                           'symbols', 'punctuation', 'proper nouns', 'entity label',
                           'word count', 'unique word count', 'TTR', 'entity raw text', 'mentions', 'hashtags','urls',
                           'count(rel words)',
-                          'relationship words', 'class', 'ttr_curve'] # URLs
+                          'relationship words', 'class', 'ttr curve', 'ttr slope'] # URLs
             writer = csv.DictWriter(out, fieldnames=fieldnames)
             writer.writeheader()
             for row in reader:
@@ -180,7 +243,7 @@ def load_dataset_and_print_stats(human_or_bot, max):
                     break
                 tweet = row[tweet_column]  # human 19, bot 2
                 clean_tweet = english_tweet_cleaner(tweet)
-                if clean_tweet is not '':
+                if clean_tweet is not '' and clean_tweet and len(clean_tweet.split())>1:
                     tweet_id += 1
                     tweet_dict = extract_stats(tweet, tweet_id, human_or_bot)
                     stored_info.append(tweet_dict)
@@ -217,7 +280,7 @@ def average_ttr_curve(stats):
     avg_curve = []
     for el in stats:
         i = 0
-        for c in el['ttr_curve']:
+        for c in el['ttr curve']:
             if len(sum_curve) > i:
                 sum_curve[i] += c
             else:
@@ -236,10 +299,15 @@ def unpack_stats(stats, featurelist):
         features = {}
         for key in tweet.keys():
             if key in featurelist:
-                features[key] = tweet[key]
+                if type(tweet[key]) == list:
+                    features[key] = str(tweet[key])
+                else:
+                    features[key] = tweet[key]
+
         featureset.append(features)
     # print(featureset)
     return featureset
+
 
 
 def train_and_test_classifiers(human_stats, bot_stats, feature_list):
@@ -255,18 +323,14 @@ def train_and_test_classifiers(human_stats, bot_stats, feature_list):
     test_set = labeled_tweets[:int(n)]
     print('\nTraining(' + str(len(train_set)) + ') and testing(' + str(len(test_set)) + ') set prepared!')
 
-    experiment = {'Features used': str(feature_list)}
+    print(feature_list)
+    experiment = {'Features used': feature_list.copy()}
 
     classifier = nltk.NaiveBayesClassifier.train(train_set)
-    # print('Accuracy with Naive Bayes is: ' + str(nltk.classify.accuracy(classifier, test_set)))
-    # classifier.show_most_informative_features(10)
-
-    classifier2 = nltk.MaxentClassifier.train(train_set)
-    # print('\nAccuracy with MaxEnt is: ' + str(nltk.classify.accuracy(classifier2, test_set)))
-    # classifier2.show_most_informative_features(10)
-    experiment['Accuracy for NB classifier'] = nltk.classify.accuracy(classifier, test_set)
+    classifier2 = nltk.MaxentClassifier.train(train_set, max_iter= 50)
 
     dicNB = calculate_precision_and_recall(classifier, test_set)
+    experiment['Accuracy for NB classifier'] = nltk.classify.accuracy(classifier, test_set)
     experiment['Precision for NB classifier'] = round(dicNB['precision'],4)
     experiment['Recall for NB classifier'] = round(dicNB['recall'],4)
     experiment['F1 for NB classifier'] = round(dicNB['f1'], 4)
@@ -277,5 +341,24 @@ def train_and_test_classifiers(human_stats, bot_stats, feature_list):
     experiment['Recall for ME classifier'] = round(dicME['recall'], 4)
     experiment['F1 for ME classifier'] = round(dicME['f1'],4)
 
+    print(classifier.show_most_informative_features(n = 5))
+    print(classifier2.show_most_informative_features(n = 5))
+
     return experiment
 
+def print_experiments_and_return_suggestions(writer, experiments, max, complete_feature_list):
+    explore =[]
+    for exp in experiments:
+        for el in max.keys():
+            if exp[el] == max[el]:
+                exp[el] = str(exp[el]) + ' *'
+                if exp['Features used'] not in explore:
+                    explore.append(exp['Features used'])
+
+        for feature in complete_feature_list:
+            if feature in exp['Features used']:
+                exp[feature]=1
+            else:
+                exp[feature]=0
+        writer.writerow(exp)
+    return explore
